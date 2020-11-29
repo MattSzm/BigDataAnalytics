@@ -2,7 +2,11 @@ package mattszm.kagglewithspark
 
 import org.apache.spark.sql._
 import org.apache.log4j._
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.sql.functions._
+import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
+import org.apache.spark.ml.regression.GBTRegressor
 
 
 object VideoGameSales {
@@ -12,17 +16,16 @@ object VideoGameSales {
                   NA_Sales: Double, EU_Sales: Double,
                   JP_Sales: Double, Other_Sales: Double)
 
-  def mostProfitableYear(spark: SparkSession, data: Dataset[Sale]): Unit = {
+  case class SaleWithGlobal(Rank: Int, Name: String, Platform: String,
+                  Year: String, Genre: String, Publisher: String,
+                  NA_Sales: Double, EU_Sales: Double,
+                  JP_Sales: Double, Other_Sales: Double,
+                  Global_Sales: Double)
+
+  def mostProfitableYear(spark: SparkSession, data: Dataset[SaleWithGlobal]): Unit = {
     import spark.implicits._
 
-    val salesWithGlobalSales = data.withColumn(
-      "Global_Sales",
-      round($"NA_Sales" + $"EU_Sales" + $"JP_Sales" + $"Other_Sales", 2))
-
-    val salesUntil2016 = salesWithGlobalSales.filter(
-      $"Year" =!= "N/A" && $"Year" =!= "2020" && $"Year" =!= "2017")
-
-    val salesGroupedByYear = salesUntil2016.groupBy("Year")
+    val salesGroupedByYear = data.groupBy("Year")
       .agg(round(sum("Global_Sales"), 2)
         .alias("Global_Sales"))
     val sortedSalesGroupedByYear = salesGroupedByYear
@@ -30,7 +33,7 @@ object VideoGameSales {
     val yearWithLargestGlobalSales = sortedSalesGroupedByYear.first()
 
     // salesWithGlobalSales are already sorted
-    val mostPopularTitle = salesWithGlobalSales.filter(
+    val mostPopularTitle = data.filter(
       $"Year" === yearWithLargestGlobalSales(0))
       .select("Name", "Platform", "Publisher").first()
 
@@ -120,6 +123,75 @@ object VideoGameSales {
     bestSalesForPlatformWithGenreSorted.show(sizeOfGenres)
   }
 
+  def linearRegressionPrediction(data: Dataset[SaleWithGlobal]): Unit = {
+    val platformIndexer = new StringIndexer()
+      .setInputCol("Platform")
+      .setOutputCol("PlatformIndex")
+      .setHandleInvalid("skip")
+    val yearIndexer = new StringIndexer()
+      .setInputCol("Year")
+      .setOutputCol("YearIndex")
+      .setHandleInvalid("skip")
+    val genreIndexer = new StringIndexer()
+      .setInputCol("Genre")
+      .setOutputCol("GenreIndex")
+      .setHandleInvalid("skip")
+    val publisherIndexer = new StringIndexer()
+      .setInputCol("Publisher")
+      .setOutputCol("PublisherIndex")
+      .setHandleInvalid("skip")
+
+    val platformEncoder = new OneHotEncoder()
+      .setInputCol("PlatformIndex")
+      .setOutputCol("PlatformVec")
+    val yearEncoder = new OneHotEncoder()
+      .setInputCol("YearIndex")
+      .setOutputCol("YearVec")
+    val genreEncoder = new OneHotEncoder()
+      .setInputCol("GenreIndex")
+      .setOutputCol("GenreVec")
+    val publisherEncoder = new OneHotEncoder()
+      .setInputCol("PublisherIndex")
+      .setOutputCol("PublisherVec")
+
+    val assembler = new VectorAssembler()
+      .setInputCols(Array("PlatformVec", "YearVec", "GenreVec",
+      "PublisherVec"))
+      .setOutputCol("features")
+
+    val gbtRegressor = new GBTRegressor()
+      .setFeaturesCol("features")
+      .setLabelCol("Global_Sales")
+      .setMaxIter(10)
+    val pipeline = new Pipeline().setStages(Array(
+      platformIndexer, yearIndexer, genreIndexer,
+      publisherIndexer, platformEncoder, yearEncoder,
+      genreEncoder, publisherEncoder, assembler,
+      gbtRegressor
+    ))
+
+    val trainTestSet = data.randomSplit(Array(0.8, 0.20), 42)
+    val trainingSet = trainTestSet(0)
+    val testSet = trainTestSet(1)
+
+    val lrModel = pipeline.fit(trainingSet)
+    val predictions = lrModel.transform(testSet)
+    val predictionsAndGlobalSales = predictions.select(
+      "prediction",
+      "Global_Sales")
+
+    println("Using machine learning to predict global sale")
+    val predictionSize = predictionsAndGlobalSales.count().toInt
+    predictionsAndGlobalSales.show(predictionSize)
+
+    val evaluator = new RegressionEvaluator()
+      .setLabelCol("Global_Sales")
+      .setPredictionCol("prediction")
+      .setMetricName("rmse")
+    val rmse = evaluator.evaluate(predictionsAndGlobalSales)
+    println(s"Root Mean Squared Error (RMSE) on test data = $rmse")
+  }
+
   def main(args: Array[String]): Unit = {
 
     Logger.getLogger("org").setLevel(Level.ERROR)
@@ -141,9 +213,16 @@ object VideoGameSales {
 
     println("Processing...\n")
 
-    mostProfitableYear(spark, data=salesRaw)
+    val salesWithGlobalSales = salesRaw.withColumn(
+      "Global_Sales",
+      round($"NA_Sales" + $"EU_Sales" + $"JP_Sales"
+        + $"Other_Sales", 2))
+      .as[SaleWithGlobal]
+
+    mostProfitableYear(spark, data=salesWithGlobalSales)
     genreWithRegion(spark, data=salesRaw)
     genreWithRegionSplitByPlatform(spark,data=salesRaw)
+    linearRegressionPrediction(data=salesWithGlobalSales)
 
     spark.stop()
   }
