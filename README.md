@@ -14,9 +14,9 @@ Set contain over 16 thousand rows.
 ###
 - Trying to predict global sales result based on: 
   - production year
-  - the platform on which the game was released
-  - genre
-  - publisher
+  - the platform on which the game was released (PS4/Wii/...)
+  - genre (Shooter/Sports/...)
+  - publisher (Activision/SquareSoft/...)
   
 Result:
 After testing multiple regression types,

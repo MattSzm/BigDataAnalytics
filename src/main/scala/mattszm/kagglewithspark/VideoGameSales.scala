@@ -5,8 +5,10 @@ import org.apache.log4j._
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.sql.functions._
-import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
-import org.apache.spark.ml.regression.GBTRegressor
+import org.apache.spark.ml.feature.{OneHotEncoder,
+  StringIndexer, VectorAssembler}
+import org.apache.spark.ml.regression.{GBTRegressor,
+  RandomForestRegressor}
 
 
 object VideoGameSales {
@@ -123,7 +125,9 @@ object VideoGameSales {
     bestSalesForPlatformWithGenreSorted.show(sizeOfGenres)
   }
 
-  def linearRegressionPrediction(data: Dataset[SaleWithGlobal]): Unit = {
+  def mlPrediction(data: Dataset[SaleWithGlobal]): Unit = {
+    println("\nUsing machine learning to predict global sale")
+
     val platformIndexer = new StringIndexer()
       .setInputCol("Platform")
       .setOutputCol("PlatformIndex")
@@ -159,37 +163,74 @@ object VideoGameSales {
       "PublisherVec"))
       .setOutputCol("features")
 
+    val trainTestSet = data.randomSplit(Array(0.8, 0.2), 42)
+    val trainingSet = trainTestSet(0)
+    val testSet = trainTestSet(1)
+    val evaluator = new RegressionEvaluator()
+      .setLabelCol("Global_Sales")
+      .setPredictionCol("prediction")
+      .setMetricName("rmse")
+
+
     val gbtRegressor = new GBTRegressor()
       .setFeaturesCol("features")
       .setLabelCol("Global_Sales")
       .setMaxIter(10)
-    val pipeline = new Pipeline().setStages(Array(
+    val gbtPipeline = new Pipeline().setStages(Array(
       platformIndexer, yearIndexer, genreIndexer,
       publisherIndexer, platformEncoder, yearEncoder,
       genreEncoder, publisherEncoder, assembler,
       gbtRegressor
     ))
-
-    val trainTestSet = data.randomSplit(Array(0.8, 0.20), 42)
-    val trainingSet = trainTestSet(0)
-    val testSet = trainTestSet(1)
-
-    val lrModel = pipeline.fit(trainingSet)
-    val predictions = lrModel.transform(testSet)
-    val predictionsAndGlobalSales = predictions.select(
+    val gbtModel = gbtPipeline.fit(trainingSet)
+    val gbtPredictions = gbtModel.transform(testSet)
+    val gbtPredictionsAndGlobalSales = gbtPredictions.select(
       "prediction",
       "Global_Sales")
 
-    println("Using machine learning to predict global sale")
-    val predictionSize = predictionsAndGlobalSales.count().toInt
-    predictionsAndGlobalSales.show(predictionSize)
+    val gbtRmse = evaluator.evaluate(gbtPredictionsAndGlobalSales)
+    println(s"\nRoot Mean Squared Error (RMSE) of Gradient-boosted " +
+      s"tree regression on test data = $gbtRmse")
+    var bestRmse = (gbtRmse, "gbt")
 
-    val evaluator = new RegressionEvaluator()
+
+    val rfRegressor = new RandomForestRegressor()
+      .setFeaturesCol("features")
       .setLabelCol("Global_Sales")
-      .setPredictionCol("prediction")
-      .setMetricName("rmse")
-    val rmse = evaluator.evaluate(predictionsAndGlobalSales)
-    println(s"Root Mean Squared Error (RMSE) on test data = $rmse")
+    val rfPipeline = new Pipeline().setStages(Array(
+      platformIndexer, yearIndexer, genreIndexer,
+      publisherIndexer, platformEncoder, yearEncoder,
+      genreEncoder, publisherEncoder, assembler,
+      rfRegressor
+    ))
+    val rfModel = rfPipeline.fit(trainingSet)
+    val rfPredictions = rfModel.transform(testSet)
+    val rfPredictionsAndGlobalSales = rfPredictions.select(
+      "prediction",
+      "Global_Sales")
+
+    val rfRmse = evaluator.evaluate(rfPredictionsAndGlobalSales)
+    println(s"\nRoot Mean Squared Error (RMSE) of Random forest" +
+      s" regression on test data = $rfRmse")
+    if (rfRmse < bestRmse._1){
+      bestRmse = (rfRmse, "rf")
+    }
+
+
+    bestRmse match {
+      case (_, "gbt") =>
+        println("\nThe best result was achieved with " +
+          "Gradient-boosted tree")
+        gbtPredictionsAndGlobalSales.show(
+          gbtPredictionsAndGlobalSales.count().toInt
+        )
+      case (_, "rf") =>
+        println("\nThe best result was achieved with " +
+          "Random forest regression")
+        rfPredictionsAndGlobalSales.show(
+          rfPredictionsAndGlobalSales.count().toInt
+        )
+    }
   }
 
   def main(args: Array[String]): Unit = {
@@ -222,7 +263,7 @@ object VideoGameSales {
     mostProfitableYear(spark, data=salesWithGlobalSales)
     genreWithRegion(spark, data=salesRaw)
     genreWithRegionSplitByPlatform(spark,data=salesRaw)
-    linearRegressionPrediction(data=salesWithGlobalSales)
+    mlPrediction(data=salesWithGlobalSales)
 
     spark.stop()
   }
