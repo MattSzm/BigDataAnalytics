@@ -25,7 +25,7 @@ we can assume there are no strong connotations
 ## Book recommendations
 Data source: https://www.kaggle.com/ruchi798/bookcrossing-dataset
 
-Recommendation analysis based on 1.15 million user ratings.
+Recommendation analysis based on 1.15 million book ratings.
 ###
 As an input, you need to enter the id of the book. The system returns the books 
 that were rated by other users who also rated book, you are interested in. 
