@@ -27,7 +27,7 @@ object BookRecommendations {
     import spark.implicits._
 
     val dataFixed = data.filter($"BookRating" >= lowLimit)
-//    val trainTestSet = dataFixed.randomSplit(Array(0.05, 0.9))(1)
+//    val trainTestSet = dataFixed.randomSplit(Array(0.10, 0.90))(0)
     val ratingPairs = dataFixed.as("ra1")
       .join(dataFixed.as("ra2"),
         $"ra1.UserID" === $"ra2.UserID" && $"ra1.ISBN" < $"ra2.ISBN")
@@ -85,13 +85,27 @@ object BookRecommendations {
     }
   }
 
-  def makeBetterDistribution(spark: SparkSession,data: Dataset[Rating]): Dataset[Rating] = {
+  def makeBetterDistribution(spark: SparkSession, data: Dataset[Rating]): Dataset[Rating] = {
     import spark.implicits._
 
     val fixedData = data.withColumn("BookRating",
       when(col("BookRating") === 0, nextInt(10)+1)
       .otherwise(col("BookRating")))
     fixedData.as[Rating]
+  }
+
+  def filterRatingsByAge(spark: SparkSession, ratingsData: Dataset[Rating],
+                         usersData: Dataset[User], pickedRangeID: Int): Dataset[Rating] = {
+    import spark.implicits._
+
+    val ratingWithUsers = ratingsData.as("rF").join(usersData.as("uS"),
+      $"rF.UserID" === $"uS.UserID")
+
+    val ranges = List(List(0, 200), List(0,20), List(20,40), List(40, 200))
+    val ratingWithUsersFiltered = ratingWithUsers.filter(
+      ($"Age" > ranges(pickedRangeID).head && $"Age" <= ranges(pickedRangeID).last)
+        || $"Age" === "NULL")
+    ratingWithUsersFiltered.select("rf.UserID", "ISBN", "BookRating").as[Rating]
   }
 
   def main(args: Array[String]): Unit = {
@@ -131,21 +145,22 @@ object BookRecommendations {
 
     println("Processing...\n")
 
-    val ratingFixed = makeBetterDistribution(spark, data=ratingsRaw)
-    val pairSimilarities = createPairSimilarities(spark,
-      data=ratingFixed, lowLimit=4).cache()
+    var idAgeRange: Int = 2
+    if (args.length > 3) idAgeRange = args(3).toInt
+    val ratingsFixed = makeBetterDistribution(spark, data=ratingsRaw)
+    val ratingsProcessed = filterRatingsByAge(spark, ratingsData=ratingsFixed,
+      usersData=usersRaw, pickedRangeID=idAgeRange)
 
-    //INPUT!
+    val pairSimilarities = createPairSimilarities(spark,
+      data=ratingsProcessed, lowLimit=4).cache()
+
+
     var idBook: String = "0439139597"
-    var similarityThreshold: Double = 0.96
+    var similarityThreshold: Double = 0.98
     var occurrencesThreshold: Int = 10
     if (args.length > 0) idBook = args(0)
     if (args.length > 1) similarityThreshold = args(1).toDouble
     if (args.length > 2) occurrencesThreshold = args(2).toInt
-
-    val foundBook = getBook(booksRaw, idBook)
-    print(s"Book recommendations for: \'${foundBook.BookTitle}\' " +
-      s"written by ${foundBook.BookAuthor}\n\n")
 
     val recommendationResults = pairSimilarities.filter(
       (col("ISBN1") === idBook || col("ISBN2") === idBook) &&
@@ -154,7 +169,12 @@ object BookRecommendations {
     )
     val recommendationResultsSorted = recommendationResults
       .sort($"similarity".desc).collect()
-    displayResults(recommendationResultsSorted, booksRaw, idBook)
+
+    val foundBook = getBook(booksRaw, idBook)
+    print(s"Book recommendations for: \'${foundBook.BookTitle}\' " +
+      s"written by ${foundBook.BookAuthor}\n\n")
+    displayResults(recommendationsData=recommendationResultsSorted,
+      booksData=booksRaw, idBook=idBook)
 
     spark.stop()
   }
