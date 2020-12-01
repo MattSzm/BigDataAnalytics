@@ -21,4 +21,6 @@ Set contain over 16 thousand rows.
 Result:
 After testing multiple regression types,
 we can assume there are no strong connotations
- 
+###
+## Book recommendations
+...
