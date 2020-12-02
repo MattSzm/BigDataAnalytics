@@ -101,7 +101,7 @@ object BookRecommendations {
     val ratingWithUsers = ratingsData.as("rF").join(usersData.as("uS"),
       $"rF.UserID" === $"uS.UserID")
 
-    val ranges = List(List(0, 200), List(0,20), List(20,40), List(40, 200))
+    val ranges = List(List(0,20), List(20,40), List(40, 200))
     val ratingWithUsersFiltered = ratingWithUsers.filter(
       ($"Age" > ranges(pickedRangeID).head && $"Age" <= ranges(pickedRangeID).last)
         || $"Age" === "NULL")
@@ -148,9 +148,14 @@ object BookRecommendations {
     var idAgeRange: Int = 2
     if (args.length > 3) idAgeRange = args(3).toInt
     val ratingsFixed = makeBetterDistribution(spark, data=ratingsRaw)
-    val ratingsProcessed = filterRatingsByAge(spark, ratingsData=ratingsFixed,
-      usersData=usersRaw, pickedRangeID=idAgeRange)
 
+    val ratingsProcessed: Dataset[Rating] = idAgeRange match {
+      case ageRange: Int if 0 < ageRange && ageRange < 4 =>
+        filterRatingsByAge(spark, ratingsData=ratingsFixed,
+          usersData=usersRaw, pickedRangeID=ageRange-1)
+      case _ => ratingsFixed
+    }
+    ratingsProcessed.show()
     val pairSimilarities = createPairSimilarities(spark,
       data=ratingsProcessed, lowLimit=4).cache()
 
