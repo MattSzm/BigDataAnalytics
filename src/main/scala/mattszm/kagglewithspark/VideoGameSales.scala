@@ -262,7 +262,7 @@ object VideoGameSales {
 
     mostProfitableYear(spark, data=salesWithGlobalSales)
     genreWithRegion(spark, data=salesRaw)
-    genreWithRegionSplitByPlatform(spark,data=salesRaw)
+    genreWithRegionSplitByPlatform(spark, data=salesRaw)
     mlPrediction(data=salesWithGlobalSales)
 
     spark.stop()

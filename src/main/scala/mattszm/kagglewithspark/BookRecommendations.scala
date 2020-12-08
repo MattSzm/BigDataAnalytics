@@ -27,7 +27,7 @@ object BookRecommendations {
     import spark.implicits._
 
     val dataFixed = data.filter($"BookRating" >= lowLimit)
-//    val trainTestSet = dataFixed.randomSplit(Array(0.10, 0.90))(0)
+//    val trainTestSet = dataFixed.randomSplit(Array(0.5, 0.5))(0)
     val ratingPairs = dataFixed.as("ra1")
       .join(dataFixed.as("ra2"),
         $"ra1.UserID" === $"ra2.UserID" && $"ra1.ISBN" < $"ra2.ISBN")
@@ -74,15 +74,16 @@ object BookRecommendations {
 
   def displayResults(recommendationsData: Array[PairSimilarity],
                      booksData: Dataset[Book], idBook: String): Unit = {
-    for (singleRes <- recommendationsData){
+    recommendationsData.foreach(singleRes => {
       var similarID = singleRes.ISBN1
       if (similarID == idBook) similarID = singleRes.ISBN2
       val foundBook = getBook(booksData, similarID)
+
       println(s"\'${foundBook.BookTitle}\', written by ${foundBook.BookAuthor}," +
         s" published by ${foundBook.Publisher} in ${foundBook.YearOfPublication} " +
         s"with similarity ratio=${singleRes.similarity}/1 " +
         s"and number of pairs=${singleRes.pairsNum}")
-    }
+    })
   }
 
   def makeBetterDistribution(spark: SparkSession, data: Dataset[Rating]): Dataset[Rating] = {
@@ -155,7 +156,6 @@ object BookRecommendations {
           usersData=usersRaw, pickedRangeID=ageRange-1)
       case _ => ratingsFixed
     }
-    ratingsProcessed.show()
     val pairSimilarities = createPairSimilarities(spark,
       data=ratingsProcessed, lowLimit=4).cache()
 
