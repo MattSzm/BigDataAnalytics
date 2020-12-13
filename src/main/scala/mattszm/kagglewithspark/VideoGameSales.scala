@@ -2,16 +2,19 @@ package mattszm.kagglewithspark
 
 import org.apache.spark.sql._
 import org.apache.log4j._
-import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.sql.functions._
-import org.apache.spark.ml.feature.{OneHotEncoder,
-  StringIndexer, VectorAssembler}
-import org.apache.spark.ml.regression.{GBTRegressor,
-  RandomForestRegressor}
+import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer, VectorAssembler}
+import org.apache.spark.ml.regression.{GBTRegressor, RandomForestRegressor}
 
 
 object VideoGameSales {
+  val spark: SparkSession = SparkSession
+    .builder
+    .appName("VideoGameSales")
+    .master("local[*]")
+    .getOrCreate()
 
   case class Sale(Rank: Int, Name: String, Platform: String,
                   Year: String, Genre: String, Publisher: String,
@@ -24,7 +27,14 @@ object VideoGameSales {
                   JP_Sales: Double, Other_Sales: Double,
                   Global_Sales: Double)
 
-  def mostProfitableYear(spark: SparkSession, data: Dataset[SaleWithGlobal]): Unit = {
+  def createSalesWithGlobalSales(data: Dataset[Sale]): Dataset[SaleWithGlobal] = {
+    import spark.implicits._
+    data.withColumn("Global_Sales",
+      round($"NA_Sales" + $"EU_Sales" + $"JP_Sales" + $"Other_Sales", 2))
+    .as[SaleWithGlobal]
+  }
+
+  def mostProfitableYear(data: Dataset[SaleWithGlobal]): Unit = {
     import spark.implicits._
 
     val salesGroupedByYear = data.groupBy("Year")
@@ -45,7 +55,7 @@ object VideoGameSales {
       s"(${mostPopularTitle(1)} version), published by ${mostPopularTitle(2)}.")
   }
 
-  def genreWithRegion(spark: SparkSession, data: Dataset[Sale]): Unit = {
+  def genreWithRegion(data: Dataset[Sale]): Unit = {
     import spark.implicits._
 
     val gamesGroupedByGenre = data.groupBy("Genre")
@@ -71,7 +81,7 @@ object VideoGameSales {
     genresWithBestSalesAndRegions.show(sizeOfOutput)
   }
 
-  def genreWithRegionSplitByPlatform(spark: SparkSession, data: Dataset[Sale]): Unit = {
+  def genreWithRegionSplitByPlatform(data: Dataset[Sale]): Unit = {
     import spark.implicits._
 
     val gamesGroupedByGenreAndPlatform = data.groupBy("Genre", "Platform")
@@ -127,82 +137,62 @@ object VideoGameSales {
 
   def mlPrediction(data: Dataset[SaleWithGlobal]): Unit = {
     println("\nUsing machine learning to predict global sale")
+    val platformIndexer = createStringIndexer("Platform", "PlatformIndex")
+    val yearIndexer = createStringIndexer("Year", "YearIndex")
+    val genreIndexer = createStringIndexer("Genre", "GenreIndex")
+    val publisherIndexer = createStringIndexer("Publisher", "PublisherIndex")
 
-    val platformIndexer = new StringIndexer()
-      .setInputCol("Platform")
-      .setOutputCol("PlatformIndex")
-      .setHandleInvalid("skip")
-    val yearIndexer = new StringIndexer()
-      .setInputCol("Year")
-      .setOutputCol("YearIndex")
-      .setHandleInvalid("skip")
-    val genreIndexer = new StringIndexer()
-      .setInputCol("Genre")
-      .setOutputCol("GenreIndex")
-      .setHandleInvalid("skip")
-    val publisherIndexer = new StringIndexer()
-      .setInputCol("Publisher")
-      .setOutputCol("PublisherIndex")
-      .setHandleInvalid("skip")
-
-    val platformEncoder = new OneHotEncoder()
-      .setInputCol("PlatformIndex")
-      .setOutputCol("PlatformVec")
-    val yearEncoder = new OneHotEncoder()
-      .setInputCol("YearIndex")
-      .setOutputCol("YearVec")
-    val genreEncoder = new OneHotEncoder()
-      .setInputCol("GenreIndex")
-      .setOutputCol("GenreVec")
-    val publisherEncoder = new OneHotEncoder()
-      .setInputCol("PublisherIndex")
-      .setOutputCol("PublisherVec")
+    val platformEncoder = createOneHotEncoder("PlatformIndex", "PlatformVec")
+    val yearEncoder = createOneHotEncoder("YearIndex", "YearVec")
+    val genreEncoder = createOneHotEncoder("GenreIndex", "GenreVec")
+    val publisherEncoder = createOneHotEncoder("PublisherIndex", "PublisherVec")
 
     val assembler = new VectorAssembler()
       .setInputCols(Array("PlatformVec", "YearVec", "GenreVec",
       "PublisherVec"))
       .setOutputCol("features")
-
-    val trainTestSet = data.randomSplit(Array(0.8, 0.2), 42)
-    val trainingSet = trainTestSet(0)
-    val testSet = trainTestSet(1)
+    val stages = Array(
+      platformIndexer, yearIndexer, genreIndexer,
+      publisherIndexer, platformEncoder, yearEncoder,
+      genreEncoder, publisherEncoder, assembler,
+    )
     val evaluator = new RegressionEvaluator()
       .setLabelCol("Global_Sales")
       .setPredictionCol("prediction")
       .setMetricName("rmse")
 
-
-    val gbtRegressor = new GBTRegressor()
-      .setFeaturesCol("features")
-      .setLabelCol("Global_Sales")
-      .setMaxIter(10)
-    val gbtPipeline = new Pipeline().setStages(Array(
-      platformIndexer, yearIndexer, genreIndexer,
-      publisherIndexer, platformEncoder, yearEncoder,
-      genreEncoder, publisherEncoder, assembler,
-      gbtRegressor
-    ))
-    val gbtModel = gbtPipeline.fit(trainingSet)
-    val gbtPredictions = gbtModel.transform(testSet)
-    val gbtPredictionsAndGlobalSales = gbtPredictions.select(
-      "prediction",
-      "Global_Sales")
-
-    val gbtRmse = evaluator.evaluate(gbtPredictionsAndGlobalSales)
-    println(s"\nRoot Mean Squared Error (RMSE) of Gradient-boosted " +
-      s"tree regression on test data = $gbtRmse")
-    var bestRmse = (gbtRmse, "gbt")
+    val (trainingSet, testSet) = prepareData(data)
+    val (rfPredictionsAndGlobalSales, rfRmse) = randomForestRegressorProcessing(
+      stages, evaluator, trainingSet, testSet)
+    val (gbtPredictionsAndGlobalSales, gbtRmse) = gradientBoostedTreeRegression(
+      stages, evaluator, trainingSet, testSet)
 
 
+    if (gbtRmse > rfRmse) {
+      println("\nThe best result was achieved with " +
+        "Gradient-boosted tree")
+      gbtPredictionsAndGlobalSales.show(
+        gbtPredictionsAndGlobalSales.count().toInt)
+    }
+    else {
+      println("\nThe best result was achieved with " +
+        "Random forest regression")
+      rfPredictionsAndGlobalSales.show(
+        rfPredictionsAndGlobalSales.count().toInt)
+    }
+  }
+
+  def randomForestRegressorProcessing(stages: Array[_<:PipelineStage],
+                                      evaluator: RegressionEvaluator,
+                                      trainingSet: Dataset[SaleWithGlobal],
+                                      testSet: Dataset[SaleWithGlobal]):
+                                      (DataFrame, Double) = {
     val rfRegressor = new RandomForestRegressor()
       .setFeaturesCol("features")
       .setLabelCol("Global_Sales")
-    val rfPipeline = new Pipeline().setStages(Array(
-      platformIndexer, yearIndexer, genreIndexer,
-      publisherIndexer, platformEncoder, yearEncoder,
-      genreEncoder, publisherEncoder, assembler,
-      rfRegressor
-    ))
+    val rfStages = stages :+ rfRegressor
+
+    val rfPipeline = new Pipeline().setStages(rfStages)
     val rfModel = rfPipeline.fit(trainingSet)
     val rfPredictions = rfModel.transform(testSet)
     val rfPredictionsAndGlobalSales = rfPredictions.select(
@@ -212,40 +202,55 @@ object VideoGameSales {
     val rfRmse = evaluator.evaluate(rfPredictionsAndGlobalSales)
     println(s"\nRoot Mean Squared Error (RMSE) of Random forest" +
       s" regression on test data = $rfRmse")
-    if (rfRmse < bestRmse._1){
-      bestRmse = (rfRmse, "rf")
-    }
+    (rfPredictionsAndGlobalSales, rfRmse)
+  }
 
+  def gradientBoostedTreeRegression(stages: Array[_<:PipelineStage],
+                                    evaluator: RegressionEvaluator,
+                                    trainingSet: Dataset[SaleWithGlobal],
+                                    testSet: Dataset[SaleWithGlobal]):
+                                    (DataFrame, Double) = {
+    val gbtRegressor = new GBTRegressor()
+      .setFeaturesCol("features")
+      .setLabelCol("Global_Sales")
+      .setMaxIter(10)
+    val gbtStages = stages :+ gbtRegressor
 
-    bestRmse match {
-      case (_, "gbt") =>
-        println("\nThe best result was achieved with " +
-          "Gradient-boosted tree")
-        gbtPredictionsAndGlobalSales.show(
-          gbtPredictionsAndGlobalSales.count().toInt
-        )
-      case (_, "rf") =>
-        println("\nThe best result was achieved with " +
-          "Random forest regression")
-        rfPredictionsAndGlobalSales.show(
-          rfPredictionsAndGlobalSales.count().toInt
-        )
-    }
+    val gbtPipeline = new Pipeline().setStages(gbtStages)
+    val gbtModel = gbtPipeline.fit(trainingSet)
+    val gbtPredictions = gbtModel.transform(testSet)
+    val gbtPredictionsAndGlobalSales = gbtPredictions.select(
+      "prediction",
+      "Global_Sales")
+
+    val gbtRmse = evaluator.evaluate(gbtPredictionsAndGlobalSales)
+    println(s"\nRoot Mean Squared Error (RMSE) of Gradient-boosted " +
+      s"tree regression on test data = $gbtRmse")
+    (gbtPredictionsAndGlobalSales, gbtRmse)
+  }
+
+  def createStringIndexer(inputCol: String, outputCol: String): StringIndexer =
+    new StringIndexer().
+      setInputCol(inputCol)
+      .setOutputCol(outputCol)
+      .setHandleInvalid("skip")
+
+  def createOneHotEncoder(inputCol: String, outputCol: String): OneHotEncoder =
+    new OneHotEncoder().
+      setInputCol(inputCol)
+      .setOutputCol(outputCol)
+
+  def prepareData(data: Dataset[SaleWithGlobal]):
+    (Dataset[SaleWithGlobal], Dataset[SaleWithGlobal]) = {
+    val trainTestSet = data.randomSplit(Array(0.8, 0.2), 42)
+    (trainTestSet(0), trainTestSet(1))
   }
 
   def main(args: Array[String]): Unit = {
-
+    import spark.implicits._
     Logger.getLogger("org").setLevel(Level.ERROR)
-
-    val spark = SparkSession
-      .builder
-      .appName("VideoGameSales")
-      .master("local[*]")
-      .getOrCreate()
-
     println("Loading data...\n")
 
-    import spark.implicits._
     val salesRaw = spark.read
       .option("header", "true")
       .option("inferSchema", "true")
@@ -254,15 +259,11 @@ object VideoGameSales {
 
     println("Processing...\n")
 
-    val salesWithGlobalSales = salesRaw.withColumn(
-      "Global_Sales",
-      round($"NA_Sales" + $"EU_Sales" + $"JP_Sales"
-        + $"Other_Sales", 2))
-      .as[SaleWithGlobal]
+    val salesWithGlobalSales = createSalesWithGlobalSales(salesRaw).cache()
 
-    mostProfitableYear(spark, data=salesWithGlobalSales)
-    genreWithRegion(spark, data=salesRaw)
-    genreWithRegionSplitByPlatform(spark, data=salesRaw)
+    mostProfitableYear(data=salesWithGlobalSales)
+    genreWithRegion(data=salesRaw)
+    genreWithRegionSplitByPlatform(data=salesRaw)
     mlPrediction(data=salesWithGlobalSales)
 
     spark.stop()

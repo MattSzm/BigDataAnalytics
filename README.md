@@ -1,4 +1,4 @@
-# Big data analysis with [Apache Spark][sparklink]
+# Big data analytics with [Apache Spark][sparklink]
 
 ## Video Game Sales
 Data source: https://www.kaggle.com/gregorut/videogamesales

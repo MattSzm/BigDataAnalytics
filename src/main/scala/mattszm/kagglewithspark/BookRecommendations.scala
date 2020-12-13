@@ -7,6 +7,12 @@ import scala.util.Random.nextInt
 
 
 object BookRecommendations {
+  val spark: SparkSession = SparkSession
+    .builder
+    .appName("BookRecommendations")
+    .master("local[*]")
+    .config("spark.local.dir", "memo")
+    .getOrCreate()
 
   case class Rating(UserID: String, ISBN: String, BookRating: Int)
 
@@ -22,7 +28,7 @@ object BookRecommendations {
   case class PairSimilarity(ISBN1: String, ISBN2: String,
                             similarity: Double, pairsNum: BigInt)
 
-  def createPairSimilarities(spark: SparkSession, data: Dataset[Rating],
+  def createPairSimilarities(data: Dataset[Rating],
                              lowLimit: Int): Dataset[PairSimilarity] = {
     import spark.implicits._
 
@@ -38,10 +44,10 @@ object BookRecommendations {
         $"ra1.UserID".alias("UserID")
       ).repartition(200).as[RatingPair]
 
-    computeCosineSimilarity(spark, ratingPairs)
+    computeCosineSimilarity(ratingPairs)
   }
 
-  def computeCosineSimilarity(spark: SparkSession, data: Dataset[RatingPair])
+  def computeCosineSimilarity(data: Dataset[RatingPair])
   : Dataset[PairSimilarity] = {
     val pairScores = data
       .withColumn("xx", col("Rating1") * col("Rating1"))
@@ -86,7 +92,7 @@ object BookRecommendations {
     })
   }
 
-  def makeBetterDistribution(spark: SparkSession, data: Dataset[Rating]): Dataset[Rating] = {
+  def makeBetterDistribution(data: Dataset[Rating]): Dataset[Rating] = {
     import spark.implicits._
 
     val fixedData = data.withColumn("BookRating",
@@ -95,7 +101,7 @@ object BookRecommendations {
     fixedData.as[Rating]
   }
 
-  def filterRatingsByAge(spark: SparkSession, ratingsData: Dataset[Rating],
+  def filterRatingsByAge(ratingsData: Dataset[Rating],
                          usersData: Dataset[User], pickedRangeID: Int): Dataset[Rating] = {
     import spark.implicits._
 
@@ -110,19 +116,10 @@ object BookRecommendations {
   }
 
   def main(args: Array[String]): Unit = {
-
+    import spark.implicits._
     Logger.getLogger("org").setLevel(Level.ERROR)
-
-    val spark = SparkSession
-      .builder
-      .appName("BookRecommendations")
-      .master("local[*]")
-      .config("spark.local.dir", "memo")
-      .getOrCreate()
-
     println("Loading data...\n")
 
-    import spark.implicits._
     val ratingsRaw = spark.read
       .option("sep", ";")
       .option("header", "true")
@@ -148,15 +145,15 @@ object BookRecommendations {
 
     var idAgeRange: Int = 2
     if (args.length > 3) idAgeRange = args(3).toInt
-    val ratingsFixed = makeBetterDistribution(spark, data=ratingsRaw)
+    val ratingsFixed = makeBetterDistribution(data=ratingsRaw)
 
     val ratingsProcessed: Dataset[Rating] = idAgeRange match {
       case ageRange: Int if 0 < ageRange && ageRange < 4 =>
-        filterRatingsByAge(spark, ratingsData=ratingsFixed,
+        filterRatingsByAge(ratingsData=ratingsFixed,
           usersData=usersRaw, pickedRangeID=ageRange-1)
       case _ => ratingsFixed
     }
-    val pairSimilarities = createPairSimilarities(spark,
+    val pairSimilarities = createPairSimilarities(
       data=ratingsProcessed, lowLimit=4).cache()
 
 
