@@ -10,6 +10,7 @@ import org.apache.spark.ml.regression.{GBTRegressor, RandomForestRegressor}
 
 
 object VideoGameSales {
+  Logger.getLogger("org").setLevel(Level.ERROR)
   val spark: SparkSession = SparkSession
     .builder
     .appName("VideoGameSales")
@@ -248,7 +249,6 @@ object VideoGameSales {
 
   def main(args: Array[String]): Unit = {
     import spark.implicits._
-    Logger.getLogger("org").setLevel(Level.ERROR)
     println("Loading data...\n")
 
     val salesRaw = spark.read

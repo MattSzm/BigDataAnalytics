@@ -7,6 +7,7 @@ import scala.util.Random.nextInt
 
 
 object BookRecommendations {
+  Logger.getLogger("org").setLevel(Level.ERROR)
   val spark: SparkSession = SparkSession
     .builder
     .appName("BookRecommendations")
@@ -27,6 +28,13 @@ object BookRecommendations {
 
   case class PairSimilarity(ISBN1: String, ISBN2: String,
                             similarity: Double, pairsNum: BigInt)
+
+  def loadData(filePath: String): DataFrame =
+    spark.read
+      .option("sep", ";")
+      .option("header", "true")
+      .option("inferSchema", "true")
+      .csv(filePath)
 
   def createPairSimilarities(data: Dataset[Rating],
                              lowLimit: Int): Dataset[PairSimilarity] = {
@@ -102,7 +110,8 @@ object BookRecommendations {
   }
 
   def filterRatingsByAge(ratingsData: Dataset[Rating],
-                         usersData: Dataset[User], pickedRangeID: Int): Dataset[Rating] = {
+                         usersData: Dataset[User], pickedRangeID: Int):
+                          Dataset[Rating] = {
     import spark.implicits._
 
     val ratingWithUsers = ratingsData.as("rF").join(usersData.as("uS"),
@@ -110,36 +119,32 @@ object BookRecommendations {
 
     val ranges = List(List(0,20), List(20,40), List(40, 200))
     val ratingWithUsersFiltered = ratingWithUsers.filter(
-      ($"Age" > ranges(pickedRangeID).head && $"Age" <= ranges(pickedRangeID).last)
+      ($"Age" > ranges(pickedRangeID).head
+        && $"Age" <= ranges(pickedRangeID).last)
         || $"Age" === "NULL")
-    ratingWithUsersFiltered.select("rf.UserID", "ISBN", "BookRating").as[Rating]
+    ratingWithUsersFiltered.select(
+      "rf.UserID", "ISBN", "BookRating").as[Rating]
+  }
+
+  def createSortedRecommendationResults(data: Dataset[PairSimilarity], id: String)(
+    implicit similarityThreshold: Double, occurrencesThreshold: Int):
+    Dataset[PairSimilarity] = {
+    import spark.implicits._
+    val recommendationResults = data.filter(
+      (col("ISBN1") === id || col("ISBN2") === id) &&
+        col("similarity") >= similarityThreshold &&
+        col("pairsNum") >= occurrencesThreshold
+    )
+    recommendationResults.sort($"similarity".desc)
   }
 
   def main(args: Array[String]): Unit = {
     import spark.implicits._
-    Logger.getLogger("org").setLevel(Level.ERROR)
     println("Loading data...\n")
 
-    val ratingsRaw = spark.read
-      .option("sep", ";")
-      .option("header", "true")
-      .option("inferSchema", "true")
-      .csv("data/BX-Book-Ratings.csv")
-      .as[Rating]
-
-    val booksRaw = spark.read
-      .option("sep", ";")
-      .option("header", "true")
-      .option("inferSchema", "true")
-      .csv("data/BX_Books.csv")
-      .as[Book]
-
-    val usersRaw = spark.read
-      .option("sep", ";")
-      .option("header", "true")
-      .option("inferSchema", "true")
-      .csv("data/BX-Users.csv")
-      .as[User]
+    val ratingsRaw = loadData("data/BX-Book-Ratings.csv").as[Rating]
+    val booksRaw = loadData("data/BX_Books.csv").as[Book]
+    val usersRaw = loadData("data/BX-Users.csv").as[User]
 
     println("Processing...\n")
 
@@ -158,19 +163,14 @@ object BookRecommendations {
 
 
     var idBook: String = "0439139597"
-    var similarityThreshold: Double = 0.98
-    var occurrencesThreshold: Int = 10
+    implicit var similarityThreshold: Double = 0.98
+    implicit var occurrencesThreshold: Int = 10
     if (args.length > 0) idBook = args(0)
     if (args.length > 1) similarityThreshold = args(1).toDouble
     if (args.length > 2) occurrencesThreshold = args(2).toInt
 
-    val recommendationResults = pairSimilarities.filter(
-      (col("ISBN1") === idBook || col("ISBN2") === idBook) &&
-      col("similarity") >= similarityThreshold &&
-        col("pairsNum") >= occurrencesThreshold
-    )
-    val recommendationResultsSorted = recommendationResults
-      .sort($"similarity".desc).collect()
+    val recommendationResultsSorted = createSortedRecommendationResults(
+      pairSimilarities, id=idBook).collect()
 
     val foundBook = getBook(booksRaw, idBook)
     print(s"Book recommendations for: \'${foundBook.BookTitle}\' " +
