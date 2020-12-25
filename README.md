@@ -3,7 +3,7 @@
 ## Video Game Sales
 Data source: https://www.kaggle.com/gregorut/videogamesales
 
-Set contain over 16 thousand rows. 
+Set contains over 16 thousand rows. 
 #### Solved problems:
 - Established most profitable year of the game industry, in the years
    1980-2016, based on sales around the world.
